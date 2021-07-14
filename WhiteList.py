@@ -5,7 +5,7 @@ import mcdreforged.api.all as MCDR
 
 PLUGIN_METADATA = {
   'id': 'whitelist',
-  'version': '1.0.0',
+  'version': '1.0.1',
   'name': 'WhiteList',
   'description': 'Minecraft WhiteList Plugin',
   'author': 'zyxgad',
@@ -104,6 +104,10 @@ def on_unload(server: MCDR.ServerInterface):
 
 def on_remove(server: MCDR.ServerInterface):
   server.logger.info('WhiteList is on disable')
+  save_config(server)
+
+def on_server_stop(server: MCDR.ServerInterface, server_return_code: int):
+  server.logger.info('[WHL] Server is on stop, saving config now...')
   save_config(server)
 
 def on_player_joined(server: MCDR.ServerInterface, player: str, info: MCDR.Info):
