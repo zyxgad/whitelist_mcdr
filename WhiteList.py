@@ -1,11 +1,12 @@
 
 import os
+import re
 import json
 import mcdreforged.api.all as MCDR
 
 PLUGIN_METADATA = {
   'id': 'whitelist',
-  'version': '1.0.1',
+  'version': '1.0.2',
   'name': 'WhiteList',
   'description': 'Minecraft WhiteList Plugin',
   'author': 'zyxgad',
@@ -16,12 +17,12 @@ PLUGIN_METADATA = {
 }
 
 default_config = {
-	'enable_whitelist': True,
-	'messages': {
-		'not_in_whitelist': '你不在白名单内'
-	},
-	'white_list': [
-	],
+  'enable_whitelist': True,
+  'messages': {
+    'not_in_whitelist': '你不在白名单内'
+  },
+  'white_list': [
+  ],
   # 0:guest 1:user 2:helper 3:admin
   'minimum_permission_level': {
     'help':   0,
@@ -47,6 +48,10 @@ HelpMessage = '''
 ============ {1} v{2} ============
 '''.strip().format(Prefix, PLUGIN_METADATA['name'], PLUGIN_METADATA['version'])
 
+PLAYER_LOGGED_RE = re.compile(r'^([0-9a-zA-Z_-]+)\[/(\S+):(\d+)\] logged in')
+PLAYER_LIST_RE = re.compile(r'^There are (\d+) of a max of (\d+) players online: ((?:[0-9A-Za-z_-]+,\s*)*[0-9A-Za-z_-]+)')
+
+listed = False
 
 def send_message(source: MCDR.CommandSource or None, *args, sep=' ', format_='[WHL] {msg}'):
   if source is None:
@@ -54,39 +59,47 @@ def send_message(source: MCDR.CommandSource or None, *args, sep=' ', format_='[W
   msg = format_.format(msg=sep.join(args))
   (source.get_server().say if source.is_player else source.reply)(msg)
 
+def flush_game_players(server: MCDR.ServerInterface):
+  global listed
+  if config['enable_whitelist'] and server.is_server_startup():
+    listed = True
+    server.execute('list')
+
 ######## COMMANDS ########
 
 def command_help(source: MCDR.CommandSource):
   send_message(source, HelpMessage, format_="{msg}")
 
 def command_list_whitelist(source: MCDR.CommandSource):
-	send_message(source, '当前白名单列表: [{}]'.format(', '.join(config['white_list'])))
+  send_message(source, '当前白名单列表: [{}]'.format(', '.join(config['white_list'])))
 
 def command_add_player(source: MCDR.CommandSource, player: str):
-	if player in config['white_list']:
-		send_message(source, '"{}"已经在白名单内了'.format(player))
-		return
-	config['white_list'].append(player)
-	source.get_server().logger.info('[WHL] added "{}" to whitelist'.format(player))
-	send_message(source, '已将"{}"添加到白名单'.format(player))
+  if player in config['white_list']:
+    send_message(source, '"{}"已经在白名单内了'.format(player))
+    return
+  config['white_list'].append(player)
+  source.get_server().logger.info('[WHL] added "{}" to whitelist'.format(player))
+  send_message(source, '已将"{}"添加到白名单'.format(player))
 
 def command_remove_player(source: MCDR.CommandSource, player: str):
-	if player not in config['white_list']:
-		send_message(source, '"{}"不在白名单内'.format(player))
-		return
-	config['white_list'].remove(player)
-	source.get_server().logger.info('[WHL] removed "{}" from whitelist'.format(player))
-	send_message(source, '已将"{}"移出白名单'.format(player))
+  if player not in config['white_list']:
+    send_message(source, '"{}"不在白名单内'.format(player))
+    return
+  config['white_list'].remove(player)
+  source.get_server().logger.info('[WHL] removed "{}" from whitelist'.format(player))
+  send_message(source, '已将"{}"移出白名单'.format(player))
+  flush_game_players(source.get_server())
 
 def command_query_player(source: MCDR.CommandSource, player: str):
-	send_message(source, ('"{}"在白名单中' if player in config['white_list'] else '"{}"不在白名单中').format(player))
+  send_message(source, ('"{}"在白名单中' if player in config['white_list'] else '"{}"不在白名单中').format(player))
 
 def command_query_enable(source: MCDR.CommandSource):
-	send_message(source, '白名单当前已启用' if config['enable_whitelist'] else '白名单当前已禁用')
+  send_message(source, '白名单当前已启用' if config['enable_whitelist'] else '白名单当前已禁用')
 
 def command_set_enable(source: MCDR.CommandSource, val: bool):
-	config['enable_whitelist'] = val
-	send_message(source, '已启用白名单' if config['enable_whitelist'] else '已禁用白名单')
+  config['enable_whitelist'] = val
+  send_message(source, '已启用白名单' if config['enable_whitelist'] else '已禁用白名单')
+  flush_game_players(source.get_server())
 
 ######## APIs ########
 
@@ -95,7 +108,8 @@ def on_load(server :MCDR.ServerInterface, prev_module):
     server.logger.info('WhiteList is on load')
   else:
     server.logger.info('WhiteList is on reload')
-
+  
+  flush_game_players(server)
   load_config(server)
   register_command(server)
 
@@ -110,9 +124,38 @@ def on_server_stop(server: MCDR.ServerInterface, server_return_code: int):
   server.logger.info('[WHL] Server is on stop, saving config now...')
   save_config(server)
 
-def on_player_joined(server: MCDR.ServerInterface, player: str, info: MCDR.Info):
-	if config['enable_whitelist'] and player not in config['white_list']:
-		server.execute('kick {player} {msg}'.format(player=player, msg=config['messages']['not_in_whitelist']))
+def on_info(server: MCDR.ServerInterface, info: MCDR.Info):
+  if info.is_user:
+    return
+  try_player_logged_info(server, info)
+  try_player_list_info(server, info)
+
+def try_player_logged_info(server: MCDR.ServerInterface, info: MCDR.Info):
+  match = PLAYER_LOGGED_RE.match(info.content)
+  if match is None:
+    return
+  player = match.group(1)
+  connip = match.group(2)
+  if config['enable_whitelist'] and player not in config['white_list']:
+    server.execute('kick {player} {msg}'.format(player=player, msg=config['messages']['not_in_whitelist']))
+
+def try_player_list_info(server: MCDR.ServerInterface, info: MCDR.Info):
+  global listed
+  if not listed:
+    return
+  listed = False
+  match = PLAYER_LIST_RE.match(info.content)
+  if match is None:
+    return
+  count = int(match.group(1))
+  if count == 0:
+    return
+  players_str = match.group(3)
+  players = re.split(r',\s*', players_str)
+  if config['enable_whitelist']:
+    for p in players:
+      if p not in config['white_list']:
+        server.execute('kick {player} {msg}'.format(player=p, msg=config['messages']['not_in_whitelist']))
 
 def register_command(server: MCDR.ServerInterface):
   def get_literal_node(literal):
@@ -130,7 +173,7 @@ def register_command(server: MCDR.ServerInterface):
     then(get_literal_node('query').
       then(MCDR.Text('name').runs(lambda src, ctx: command_query_player(src, ctx['name'])))).
     then(get_literal_node('enable').
-    	runs(command_query_enable).
+      runs(command_query_enable).
       then(MCDR.Literal('true').runs(lambda src: command_set_enable(src, True))).
       then(MCDR.Literal('false').runs(lambda src: command_set_enable(src, False)))).
     then(get_literal_node('reload').runs(lambda src: load_config(server, src))).
@@ -144,7 +187,7 @@ def load_config(server: MCDR.ServerInterface, source: MCDR.CommandSource or None
     with open(CONFIG_FILE) as file:
       js = json.load(file)
     for key in default_config.keys():
-      config[key] = js[key]
+      config[key] = (js if key in js else default_config)[key]
     server.logger.info('Config file loaded')
     send_message(source, '配置文件加载成功')
   except:
@@ -152,6 +195,7 @@ def load_config(server: MCDR.ServerInterface, source: MCDR.CommandSource or None
     send_message(source, '配置文件加载失败, 切换默认配置')
     config = default_config.copy()
     save_config(server)
+  flush_game_players(server)
 
 def save_config(server: MCDR.ServerInterface, source: MCDR.CommandSource or None = None):
     with open(CONFIG_FILE, 'w') as file:
