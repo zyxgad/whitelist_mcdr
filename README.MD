@@ -1,5 +1,9 @@
 
+- **Sorry, it has some bug since MCDR's principle, so stop maintenance now**
+
 # 中文
+
+- **抱歉，由于MCDR的原理，它有致命bug，现停止维护**
 
 ## 依赖
 - **mcdreforged** >= ***1.0.0***
